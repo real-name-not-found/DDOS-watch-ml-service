@@ -67,3 +67,48 @@ Fix applied:
 - `requirements.txt` now pins `scikit-learn==1.6.1`
 
 So the next run must begin with reinstalling dependencies from the updated `requirements.txt`.
+
+## Checkpoint 2 - Service validation and provider normalization fixes
+
+What changed:
+- `ddos_shield_v2/providers/ipwho.py` was corrected so binary-style provider flags return `0` instead of empty strings when false.
+- `app.py` now reads debug mode from environment instead of always starting Flask with `debug=True`.
+
+Verification:
+- Local `/predict` testing succeeded for public IPv4 input.
+- Invalid and private IP checks behaved as expected.
+- `py -m compileall .` completed successfully after the fixes.
+
+Why this matters:
+- Feature values sent into the saved preprocessor are more consistent with the training pipeline.
+- The local/dev Flask entrypoint is safer and closer to a production deployment setup.
+
+## Checkpoint 3 - Team Cymru DNS fallback restored live ASN lookups
+
+Issue found:
+- Team Cymru lookups had started failing for all tested IPs with `cymru_error = "timeout"`.
+
+Root cause:
+- The Python DNS resolver was using the local/system DNS server first, and that resolver was timing out on `*.cymru.com` TXT lookups even though the records themselves were valid.
+
+Fix applied:
+- `ddos_shield_v2/providers/team_cymru.py` now keeps the system resolver as the primary path but falls back to public DNS resolvers when the local resolver times out or has no nameserver response.
+- The fallback nameservers default to `1.1.1.1,8.8.8.8` and can be overridden with `DDS_DNS_NAMESERVERS`.
+
+Verification:
+- A direct feature-build test for `8.8.8.8` now returns:
+  - `cymru_success = 1`
+  - ASN name populated
+  - prefix populated
+
+## Checkpoint 4 - Team Cymru latency reduced for live predictions
+
+Issue found:
+- Even after the fallback logic was added, the live service could still feel slow and occasionally return `cymru_success = 0` because the system DNS resolver was still being tried before the known-good public resolvers.
+
+Fix applied:
+- `ddos_shield_v2/providers/team_cymru.py` now prefers the configured public fallback resolvers first and only falls back to the system resolver afterward.
+
+Verification:
+- A direct `predict_one('8.8.8.8')` run completed in about 2.6 seconds.
+- The returned provider status showed `cymru_success = 1`.

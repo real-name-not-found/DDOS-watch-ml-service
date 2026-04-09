@@ -29,11 +29,10 @@ class IpWhoClient(RequestsProvider):
             "display_isp": connection.get("isp", "") or "",
             "display_org": connection.get("org", "") or "",
             "ipwho_security_available": 1 if security else 0,
-            "is_hosting_provider": 1 if security.get("hosting") else "",
-            "is_proxy": 1 if security.get("proxy") else "",
-            "is_vpn": 1 if security.get("vpn") else "",
-            "is_tor": 1 if security.get("tor") else "",
-            "is_anonymous": 1 if security.get("anonymous") else "",
+            "is_hosting_provider": 1 if security.get("hosting") else 0,
+            "is_proxy": 1 if security.get("proxy") else 0,
+            "is_vpn": 1 if security.get("vpn") else 0,
+            "is_tor": 1 if security.get("tor") else 0,
+            "is_anonymous": 1 if security.get("anonymous") else 0,
         }
         return ProviderResult(success=True, data=normalized)
-

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 from typing import Dict, Iterable, List
 
 from ddos_shield_v2.types import ProviderResult
@@ -35,11 +36,27 @@ class TeamCymruClient:
         self.timeout = timeout
         self._asn_cache: Dict[int, ProviderResult] = {}
         self._resolver = None
+        self._fallback_resolver = None
         if dns is not None:
             resolver = dns.resolver.Resolver(configure=True)
             resolver.timeout = timeout
             resolver.lifetime = timeout
             self._resolver = resolver
+
+            # Some local/system DNS resolvers time out on Team Cymru TXT queries
+            # even when the records are valid. Keep the system resolver first, but
+            # fall back to public resolvers for this specific provider path.
+            fallback_nameservers = [
+                ns.strip()
+                for ns in os.getenv("DDS_DNS_NAMESERVERS", "1.1.1.1,8.8.8.8").split(",")
+                if ns.strip()
+            ]
+            if fallback_nameservers:
+                fallback_resolver = dns.resolver.Resolver(configure=False)
+                fallback_resolver.nameservers = fallback_nameservers
+                fallback_resolver.timeout = timeout
+                fallback_resolver.lifetime = timeout
+                self._fallback_resolver = fallback_resolver
 
     def lookup_one(self, ip: str) -> ProviderResult:
         return self.lookup_many([ip]).get(ip, ProviderResult(success=False, error="missing_lookup"))
@@ -146,23 +163,39 @@ class TeamCymruClient:
         return result
 
     def _lookup_txt(self, query_name: str) -> ProviderResult:
-        try:
-            answers = self._resolver.resolve(query_name, "TXT")
-        except dns.resolver.NXDOMAIN:
-            return ProviderResult(success=False, error="nxdomain")
-        except dns.resolver.NoAnswer:
-            return ProviderResult(success=False, error="no_answer")
-        except dns.resolver.NoNameservers:
-            return ProviderResult(success=False, error="no_nameservers")
-        except dns.exception.Timeout:
-            return ProviderResult(success=False, error="timeout")
-        except Exception:
-            return ProviderResult(success=False, error="dns_lookup_failed")
+        last_error: str | None = None
 
-        records: List[str] = []
-        for answer in answers:
-            records.append("".join(_txt_strings(answer)))
+        # Public DNS resolvers are tried first because some local resolvers time
+        # out on Team Cymru TXT lookups even when the records themselves are valid.
+        resolvers = []
+        if self._fallback_resolver is not None:
+            resolvers.append(("fallback", self._fallback_resolver))
+        if self._resolver is not None:
+            resolvers.append(("system", self._resolver))
 
-        if not records:
-            return ProviderResult(success=False, error="empty_answer")
-        return ProviderResult(success=True, data={"record": records[0]})
+        for resolver_name, resolver in resolvers:
+            try:
+                answers = resolver.resolve(query_name, "TXT")
+            except dns.resolver.NXDOMAIN:
+                return ProviderResult(success=False, error="nxdomain")
+            except dns.resolver.NoAnswer:
+                return ProviderResult(success=False, error="no_answer")
+            except dns.resolver.NoNameservers:
+                last_error = "fallback_no_nameservers" if resolver_name == "fallback" else "no_nameservers"
+                continue
+            except dns.exception.Timeout:
+                last_error = "fallback_timeout" if resolver_name == "fallback" else "timeout"
+                continue
+            except Exception:
+                last_error = "fallback_dns_lookup_failed" if resolver_name == "fallback" else "dns_lookup_failed"
+                continue
+
+            records: List[str] = []
+            for answer in answers:
+                records.append("".join(_txt_strings(answer)))
+
+            if not records:
+                return ProviderResult(success=False, error="empty_answer")
+            return ProviderResult(success=True, data={"record": records[0]})
+
+        return ProviderResult(success=False, error=last_error or "dns_lookup_failed")
